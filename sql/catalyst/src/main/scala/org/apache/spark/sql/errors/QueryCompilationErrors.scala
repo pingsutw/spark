@@ -741,4 +741,9 @@ private[spark] object QueryCompilationErrors {
     new InvalidUDFClassException(s"No handler for UDAF '$name'. " +
       "Use sparkSession.udf.register(...) instead.")
   }
+
+  def temporaryViewIsNotCached(tableIdentifier: TableIdentifier): Throwable = {
+    new AnalysisException(
+        s"Temporary view $tableIdent is not cached for analyzing columns.")
+  }
 }
