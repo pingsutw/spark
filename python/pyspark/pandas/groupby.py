@@ -27,7 +27,7 @@ from collections.abc import Callable
 from distutils.version import LooseVersion
 from functools import partial
 from itertools import product
-from typing import Any, List, Set, Tuple, Union, cast
+from typing import Any, List, Set, Tuple, Union, cast, Optional
 
 import pandas as pd
 from pandas.api.types import is_hashable, is_list_like
@@ -104,20 +104,22 @@ class GroupBy(object, metaclass=ABCMeta):
         self._agg_columns = agg_columns
 
     @property
-    def _groupkeys_scols(self):
+    def _groupkeys_scols(self) -> List[Column]:
         return [s.spark.column for s in self._groupkeys]
 
     @property
-    def _agg_columns_scols(self):
+    def _agg_columns_scols(self) -> List[Column]:
         return [s.spark.column for s in self._agg_columns]
 
     @abstractmethod
-    def _apply_series_op(self, op, should_resolve: bool = False, numeric_only: bool = False):
+    def _apply_series_op(self, op: Callable, should_resolve: bool = False,  # type: ignore
+                         numeric_only: bool = False):
         pass
 
     # TODO: Series support is not implemented yet.
     # TODO: not all arguments are implemented comparing to pandas' for now.
-    def aggregate(self, func_or_funcs=None, *args, **kwargs) -> DataFrame:
+    def aggregate(self, func_or_funcs: Union[dict, str, list] = None,
+                  *args: Any, **kwargs: Any) -> DataFrame:
         """Aggregate using one or more operations over the specified axis.
 
         Parameters
@@ -275,7 +277,8 @@ class GroupBy(object, metaclass=ABCMeta):
     agg = aggregate
 
     @staticmethod
-    def _spark_groupby(psdf, func, groupkeys=()):
+    def _spark_groupby(psdf: Union[DataFrame, Series], func: dict,
+                       groupkeys: List[Series] = []) -> InternalFrame:
         groupkey_names = [SPARK_INDEX_NAME_FORMAT(i) for i in range(len(groupkeys))]
         groupkey_scols = [s.spark.column.alias(name) for s, name in zip(groupkeys, groupkey_names)]
 
@@ -647,7 +650,7 @@ class GroupBy(object, metaclass=ABCMeta):
         )
         return first_series(DataFrame(internal))
 
-    def diff(self, periods=1) -> Union[DataFrame, Series]:
+    def diff(self, periods: int = 1) -> Union[DataFrame, Series]:
         """
         First discrete difference of element.
 
@@ -706,7 +709,7 @@ class GroupBy(object, metaclass=ABCMeta):
             lambda sg: sg._psser._diff(periods, part_cols=sg._groupkeys_scols), should_resolve=True
         )
 
-    def cumcount(self, ascending=True) -> Series:
+    def cumcount(self, ascending: bool = True) -> Series:
         """
         Number each item in each group from 0 to the length of that group - 1.
 
@@ -962,7 +965,7 @@ class GroupBy(object, metaclass=ABCMeta):
             numeric_only=True,
         )
 
-    def apply(self, func, *args, **kwargs) -> Union[DataFrame, Series]:
+    def apply(self, func: Callable, *args: Any, **kwargs: Any) -> Union[DataFrame, Series]:
         """
         Apply function `func` group-wise and combine the results together.
 
@@ -1140,8 +1143,8 @@ class GroupBy(object, metaclass=ABCMeta):
         else:
             f = SelectionMixin._builtin_table.get(func, func)
 
-            def pandas_apply(pdf, *a, **k):
-                return f(pdf.drop(groupkey_names, axis=1), *a, **k)
+            def pandas_apply(pdf: Union[DataFrame, Series], *a: Any, **k: Any) -> Callable:
+                return f(pdf.drop(groupkey_names, axis=1), *a, **k)  # type: ignore
 
         should_return_series = False
 
@@ -1197,7 +1200,7 @@ class GroupBy(object, metaclass=ABCMeta):
                     )
                 data_dtypes = [cast(Union[SeriesType, ScalarType], return_type).dtype]
 
-        def pandas_groupby_apply(pdf):
+        def pandas_groupby_apply(pdf: Union[DataFrame, Series]) -> Union[DataFrame, Series]:
 
             if not is_series_groupby and LooseVersion(pd.__version__) < LooseVersion("0.25"):
                 # `groupby.apply` in pandas<0.25 runs the functions twice for the first group.
@@ -1205,7 +1208,8 @@ class GroupBy(object, metaclass=ABCMeta):
 
                 should_skip_first_call = True
 
-                def wrapped_func(df, *a, **k):
+                def wrapped_func(df: Union[DataFrame, Series],
+                                 *a: Any, **k: Any) -> Union[Series, DataFrame, Callable]:
                     nonlocal should_skip_first_call
                     if should_skip_first_call:
                         should_skip_first_call = False
@@ -1220,9 +1224,11 @@ class GroupBy(object, metaclass=ABCMeta):
                 wrapped_func = pandas_apply
 
             if is_series_groupby:
-                pdf_or_ser = pdf.groupby(groupkey_names)[name].apply(wrapped_func, *args, **kwargs)
+                pdf_or_ser = pdf.groupby(  # type: ignore
+                    groupkey_names)[name].apply(wrapped_func, *args, **kwargs)
             else:
-                pdf_or_ser = pdf.groupby(groupkey_names).apply(wrapped_func, *args, **kwargs)
+                pdf_or_ser = pdf.groupby(  # type: ignore
+                    groupkey_names).apply(wrapped_func, *args, **kwargs)
 
             if not isinstance(pdf_or_ser, pd.DataFrame):
                 return pd.DataFrame(pdf_or_ser)
@@ -1255,14 +1261,14 @@ class GroupBy(object, metaclass=ABCMeta):
             return DataFrame(internal)
 
     # TODO: implement 'dropna' parameter
-    def filter(self, func) -> Union[DataFrame, Series]:
+    def filter(self, func: Callable) -> Union[DataFrame, Series]:
         """
         Return a copy of a DataFrame excluding elements from groups that
         do not satisfy the boolean criterion specified by func.
 
         Parameters
         ----------
-        f : function
+        func : function
             Function to apply to each subframe. Should return True or False.
         dropna : Drop groups that do not pass the filter. True by default;
             if False, groups that evaluate False are filled with NaNs.
@@ -1323,17 +1329,19 @@ class GroupBy(object, metaclass=ABCMeta):
 
         if is_series_groupby:
 
-            def pandas_filter(pdf):
-                return pd.DataFrame(pdf.groupby(groupkey_names)[pdf.columns[-1]].filter(func))
+            def pandas_filter(pdf: Union[DataFrame, Series]) -> DataFrame:
+                return pd.DataFrame(pdf.groupby(  # type: ignore
+                    groupkey_names)[pdf.columns[-1]].filter(func))
 
         else:
             f = SelectionMixin._builtin_table.get(func, func)
 
-            def wrapped_func(pdf):
+            def wrapped_func(pdf: DataFrame) -> DataFrame:
                 return f(pdf.drop(groupkey_names, axis=1))
 
-            def pandas_filter(pdf):
-                return pdf.groupby(groupkey_names).filter(wrapped_func).drop(groupkey_names, axis=1)
+            def pandas_filter(pdf: Union[DataFrame, Series]) -> "DataFrame":  # type: ignore
+                return pdf.groupby(groupkey_names).filter(  # type: ignore
+                    wrapped_func).drop(groupkey_names, axis=1)
 
         sdf = GroupBy._spark_group_map_apply(
             psdf,
@@ -1350,7 +1358,9 @@ class GroupBy(object, metaclass=ABCMeta):
             return psdf
 
     @staticmethod
-    def _prepare_group_map_apply(psdf, groupkeys, agg_columns):
+    def _prepare_group_map_apply(psdf: DataFrame,
+                                 groupkeys: List[Series], agg_columns: List[Series]) ->\
+            Tuple[DataFrame, List[Union[tuple, Any]], List[Union[tuple, Any]]]:
         groupkey_labels = [
             verify_temp_column_name(psdf, "__groupkey_{}__".format(i))
             for i in range(len(groupkeys))
@@ -1619,7 +1629,7 @@ class GroupBy(object, metaclass=ABCMeta):
         return DataFrame(internal)
 
     def fillna(
-        self, value=None, method=None, axis=None, inplace=False, limit=None
+        self, value: Union[float, dict, Series] = None, method=None, axis=None, inplace=False, limit=None
     ) -> Union[DataFrame, Series]:
         """Fill NA/NaN values in group.
 
@@ -1995,7 +2005,7 @@ class GroupBy(object, metaclass=ABCMeta):
             should_resolve=True,
         )
 
-    def transform(self, func, *args, **kwargs) -> Union[DataFrame, Series]:
+    def transform(self, func: Callable, *args: Any, **kwargs: Any) -> Union[DataFrame, Series]:
         """
         Apply function column-by-column to the GroupBy object.
 
@@ -2181,7 +2191,7 @@ class GroupBy(object, metaclass=ABCMeta):
 
         return DataFrame(internal)
 
-    def nunique(self, dropna=True) -> Union[DataFrame, Series]:
+    def nunique(self, dropna: bool = True) -> Union[DataFrame, Series]:
         """
         Return DataFrame with number of distinct observations per group for each column.
 
@@ -2234,7 +2244,7 @@ class GroupBy(object, metaclass=ABCMeta):
 
         return self._reduce_for_stat_function(stat_function, only_numeric=False)
 
-    def rolling(self, window, min_periods=None) -> RollingGroupby:
+    def rolling(self, window: int, min_periods: int = None) -> RollingGroupby:
         """
         Return an rolling grouper, providing rolling
         functionality per group.
@@ -2261,7 +2271,7 @@ class GroupBy(object, metaclass=ABCMeta):
         """
         return RollingGroupby(self, window, min_periods=min_periods)
 
-    def expanding(self, min_periods=1) -> ExpandingGroupby:
+    def expanding(self, min_periods: int = 1) -> ExpandingGroupby:
         """
         Return an expanding grouper, providing expanding
         functionality per group.
@@ -2283,7 +2293,7 @@ class GroupBy(object, metaclass=ABCMeta):
         """
         return ExpandingGroupby(self, min_periods=min_periods)
 
-    def get_group(self, name) -> Union[DataFrame, Series]:
+    def get_group(self, name: any) -> Union[DataFrame, Series]:
         """
         Construct DataFrame from group with provided name.
 
@@ -2362,7 +2372,7 @@ class GroupBy(object, metaclass=ABCMeta):
 
         return DataFrame(internal)
 
-    def median(self, numeric_only=True, accuracy=10000) -> Union[DataFrame, Series]:
+    def median(self, numeric_only: bool = True, accuracy: int = 10000) -> Union[DataFrame, Series]:
         """
         Compute median of groups, excluding missing values.
 
@@ -2429,7 +2439,8 @@ class GroupBy(object, metaclass=ABCMeta):
         stat_function = lambda col: F.percentile_approx(col, 0.5, accuracy)
         return self._reduce_for_stat_function(stat_function, only_numeric=numeric_only)
 
-    def _reduce_for_stat_function(self, sfun, only_numeric):
+    def _reduce_for_stat_function(self, sfun: Callable,
+                                  only_numeric: bool) -> Optional["DataFrame"]:
         agg_columns = self._agg_columns
         agg_columns_scols = self._agg_columns_scols
 
@@ -2472,7 +2483,7 @@ class GroupBy(object, metaclass=ABCMeta):
             data_spark_columns=[scol_for(sdf, col) for col in data_columns],
             column_label_names=self._psdf._internal.column_label_names,
         )
-        psdf = DataFrame(internal)
+        psdf: DataFrame = DataFrame(internal)
 
         if self._dropna:
             psdf = DataFrame(
@@ -2536,7 +2547,7 @@ class GroupBy(object, metaclass=ABCMeta):
             )
         )
 
-        def assign_columns(psdf, this_column_labels, that_column_labels):
+        def assign_columns(psdf, this_column_labels, that_column_labels):  # type: ignore
             raise NotImplementedError(
                 "Duplicated labels with groupby() and "
                 "'compute.ops_on_diff_frames' option are not supported currently "
@@ -2647,7 +2658,7 @@ class DataFrameGroupBy(GroupBy):
                 return partial(property_or_func, self)
         return self.__getitem__(item)
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: Any) -> Union["SeriesGroupBy", "DataFrameGroupBy"]:
         if self._as_index and is_name_like_value(item):
             return SeriesGroupBy(
                 self._psdf._psser_for(item if is_name_like_tuple(item) else (item,)),
@@ -2677,7 +2688,8 @@ class DataFrameGroupBy(GroupBy):
                 agg_columns=item,
             )
 
-    def _apply_series_op(self, op, should_resolve: bool = False, numeric_only: bool = False):
+    def _apply_series_op(self, op: Callable, should_resolve: bool = False,
+                         numeric_only: bool = False) -> DataFrame:
         applied = []
         for column in self._agg_columns:
             applied.append(op(column.groupby(self._groupkeys)))
@@ -2801,7 +2813,8 @@ class SeriesGroupBy(GroupBy):
             new_by_series = GroupBy._resolve_grouping(psser._psdf, by)
             return SeriesGroupBy(psser, new_by_series, as_index=as_index, dropna=dropna)
 
-    def __init__(self, psser: Series, by: List[Series], as_index: bool = True, dropna: bool = True):
+    def __init__(self, psser: Series, by: List[Series],
+                 as_index: bool = True, dropna: bool = True) -> None:
         if not as_index:
             raise TypeError("as_index=False only valid with DataFrame")
         super().__init__(
@@ -2824,7 +2837,9 @@ class SeriesGroupBy(GroupBy):
                 return partial(property_or_func, self)
         raise AttributeError(item)
 
-    def _apply_series_op(self, op, should_resolve: bool = False, numeric_only: bool = False):
+    def _apply_series_op(self, op: Callable,
+                         should_resolve: bool = False,
+                         numeric_only: bool = False) -> Union["Series", pd.Series]:
         if numeric_only and not isinstance(self._agg_columns[0].spark.data_type, NumericType):
             raise DataError("No numeric types to aggregate")
         psser = op(self)
@@ -2834,36 +2849,37 @@ class SeriesGroupBy(GroupBy):
         else:
             return psser
 
-    def _reduce_for_stat_function(self, sfun, only_numeric):
+    def _reduce_for_stat_function(self, sfun: Callable,
+                                  only_numeric: bool) -> Union["Series", pd.Series]:
         return first_series(super()._reduce_for_stat_function(sfun, only_numeric))
 
-    def agg(self, *args, **kwargs) -> None:
+    def agg(self, *args: Any, **kwargs: Any) -> None:
         return MissingPandasLikeSeriesGroupBy.agg(self, *args, **kwargs)
 
-    def aggregate(self, *args, **kwargs) -> None:
+    def aggregate(self, *args: Any, **kwargs: Any) -> None:
         return MissingPandasLikeSeriesGroupBy.aggregate(self, *args, **kwargs)
 
-    def transform(self, func, *args, **kwargs) -> Series:
+    def transform(self, func: Callable, *args: Any, **kwargs: Any) -> Series:
         return first_series(super().transform(func, *args, **kwargs)).rename(self._psser.name)
 
     transform.__doc__ = GroupBy.transform.__doc__
 
-    def idxmin(self, skipna=True) -> Series:
+    def idxmin(self, skipna: bool = True) -> Series:
         return first_series(super().idxmin(skipna))
 
     idxmin.__doc__ = GroupBy.idxmin.__doc__
 
-    def idxmax(self, skipna=True) -> Series:
+    def idxmax(self, skipna: bool = True) -> Series:
         return first_series(super().idxmax(skipna))
 
     idxmax.__doc__ = GroupBy.idxmax.__doc__
 
-    def head(self, n=5) -> Series:
+    def head(self, n: int = 5) -> Series:
         return first_series(super().head(n)).rename(self._psser.name)
 
     head.__doc__ = GroupBy.head.__doc__
 
-    def tail(self, n=5) -> Series:
+    def tail(self, n: int = 5) -> Series:
         return first_series(super().tail(n)).rename(self._psser.name)
 
     tail.__doc__ = GroupBy.tail.__doc__
@@ -2873,13 +2889,13 @@ class SeriesGroupBy(GroupBy):
 
     size.__doc__ = GroupBy.size.__doc__
 
-    def get_group(self, name) -> Series:
+    def get_group(self, name: str) -> Series:
         return first_series(super().get_group(name))
 
     get_group.__doc__ = GroupBy.get_group.__doc__
 
     # TODO: add keep parameter
-    def nsmallest(self, n=5) -> Series:
+    def nsmallest(self, n: int = 5) -> Series:
         """
         Return the first n rows ordered by columns in ascending order in group.
 
@@ -2957,7 +2973,7 @@ class SeriesGroupBy(GroupBy):
         return first_series(DataFrame(internal))
 
     # TODO: add keep parameter
-    def nlargest(self, n=5) -> Series:
+    def nlargest(self, n: int = 5) -> Series:
         """
         Return the first n rows ordered by columns in descending order in group.
 
@@ -3035,7 +3051,8 @@ class SeriesGroupBy(GroupBy):
         return first_series(DataFrame(internal))
 
     # TODO: add bins, normalize parameter
-    def value_counts(self, sort=None, ascending=None, dropna=True) -> Series:
+    def value_counts(self, sort: bool = None,
+                     ascending: bool = None, dropna: bool = True) -> Series:
         """
         Compute group sizes.
 
@@ -3125,7 +3142,7 @@ class SeriesGroupBy(GroupBy):
         return self._reduce_for_stat_function(F.collect_set, only_numeric=False)
 
 
-def is_multi_agg_with_relabel(**kwargs):
+def is_multi_agg_with_relabel(**kwargs: Any) -> bool:
     """
     Check whether the kwargs pass to .agg look like multi-agg with relabling.
 
@@ -3152,7 +3169,7 @@ def is_multi_agg_with_relabel(**kwargs):
     return all(isinstance(v, tuple) and len(v) == 2 for v in kwargs.values())
 
 
-def normalize_keyword_aggregation(kwargs):
+def normalize_keyword_aggregation(kwargs: Any) -> Tuple[dict, List[str], List[Tuple[str, str]]]:
     """
     Normalize user-provided kwargs.
 
@@ -3183,7 +3200,7 @@ def normalize_keyword_aggregation(kwargs):
         kwargs = OrderedDict(sorted(kwargs.items()))
 
     # TODO(Py35): When we drop python 3.5, change this to defaultdict(list)
-    aggspec = OrderedDict()
+    aggspec: OrderedDict = OrderedDict()
     order = []
     columns, pairs = list(zip(*kwargs.items()))
 
@@ -3197,11 +3214,11 @@ def normalize_keyword_aggregation(kwargs):
     # For MultiIndex, we need to flatten the tuple, e.g. (('y', 'A'), 'max') needs to be
     # flattened to ('y', 'A', 'max'), it won't do anything on normal Index.
     if isinstance(order[0][0], tuple):
-        order = [(*levs, method) for levs, method in order]
+        order = [(*levs, method) for levs, method in order]  # type: ignore
     return aggspec, columns, order
 
 
-def _test():
+def _test() -> None:
     import os
     import doctest
     import sys

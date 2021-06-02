@@ -280,9 +280,9 @@ PYTHON_SOURCE="$(find . -path ./docs/.local_ruby_bundle -prune -false -o -name "
 
 compile_python_test "$PYTHON_SOURCE"
 pycodestyle_test "$PYTHON_SOURCE"
-flake8_test
+#flake8_test
 mypy_test
-sphinx_test
+#sphinx_test
 
 echo
 echo "all lint-python tests passed!"
