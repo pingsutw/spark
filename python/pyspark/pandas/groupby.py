@@ -1629,7 +1629,8 @@ class GroupBy(object, metaclass=ABCMeta):
         return DataFrame(internal)
 
     def fillna(
-        self, value: Union[float, dict, Series] = None, method=None, axis=None, inplace=False, limit=None
+        self, value: Union[float, dict, Series] = None,
+            method: str = None, axis: int = None, inplace: bool = False, limit: int = None
     ) -> Union[DataFrame, Series]:
         """Fill NA/NaN values in group.
 
