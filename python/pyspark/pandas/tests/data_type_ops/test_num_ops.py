@@ -46,7 +46,8 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
         for pser, psser in self.numeric_pser_psser_pairs:
             self.assert_eq(pser + pser, psser + psser)
             self.assert_eq(pser + 1, psser + 1)
-            # self.assert_eq(pser + 0.1, psser + 0.1)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(pser + 0.1, psser + 0.1)
             self.assert_eq(pser + pser.astype(bool), psser + psser.astype(bool))
 
         with option_context("compute.ops_on_diff_frames", True):
@@ -66,7 +67,8 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
         for pser, psser in self.numeric_pser_psser_pairs:
             self.assert_eq(pser - pser, psser - psser)
             self.assert_eq(pser - 1, psser - 1)
-            # self.assert_eq(pser - 0.1, psser - 0.1)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(pser - 0.1, psser - 0.1)
             self.assert_eq(pser - pser.astype(bool), psser - psser.astype(bool))
 
         with option_context("compute.ops_on_diff_frames", True):
@@ -201,7 +203,8 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
     def test_rsub(self):
         for pser, psser in self.numeric_pser_psser_pairs:
             self.assert_eq(1 - pser, 1 - psser)
-            # self.assert_eq(0.1 - pser, 0.1 - psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(0.1 - pser, 0.1 - psser)
             self.assertRaises(TypeError, lambda: "x" - psser)
             self.assertRaises(TypeError, lambda: True - psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) - psser)
@@ -210,7 +213,8 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
     def test_rmul(self):
         for pser, psser in self.numeric_pser_psser_pairs:
             self.assert_eq(1 * pser, 1 * psser)
-            # self.assert_eq(0.1 * pser, 0.1 * psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(0.1 * pser, 0.1 * psser)
             self.assertRaises(TypeError, lambda: "x" * psser)
             self.assertRaises(TypeError, lambda: True * psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) * psser)
@@ -218,8 +222,9 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
 
     def test_rtruediv(self):
         for pser, psser in self.numeric_pser_psser_pairs:
-            # self.assert_eq(5 / pser, 5 / psser)
-            # self.assert_eq(0.1 / pser, 0.1 / psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(5 / pser, 5 / psser)
+                self.assert_eq(0.1 / pser, 0.1 / psser)
             self.assertRaises(TypeError, lambda: "x" + psser)
             self.assertRaises(TypeError, lambda: True + psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) / psser)
@@ -227,8 +232,9 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
 
     def test_rfloordiv(self):
         for pser, psser in self.numeric_pser_psser_pairs:
-            # self.assert_eq(5 // pser, 5 // psser)
-            # self.assert_eq(0.1 // pser, 0.1 // psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(5 // pser, 5 // psser)
+                self.assert_eq(0.1 // pser, 0.1 // psser)
             self.assertRaises(TypeError, lambda: "x" // psser)
             self.assertRaises(TypeError, lambda: True // psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) // psser)
@@ -236,8 +242,9 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
 
     def test_rpow(self):
         for pser, psser in self.numeric_pser_psser_pairs:
-            # self.assert_eq(1 ** pser, 1 ** psser)
-            # self.assert_eq(0.1 ** pser, 0.1 ** psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(1 ** pser, 1 ** psser)
+                self.assert_eq(0.1 ** pser, 0.1 ** psser)
             self.assertRaises(TypeError, lambda: "x" ** psser)
             self.assertRaises(TypeError, lambda: True ** psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) ** psser)
@@ -246,7 +253,8 @@ class NumOpsTest(PandasOnSparkTestCase, TestCasesUtils):
     def test_rmod(self):
         for pser, psser in self.numeric_pser_psser_pairs:
             self.assert_eq(1 % pser, 1 % psser)
-            # self.assert_eq(0.1 % pser, 0.1 % psser)
+            if psser.dtype.type != np.dtype("object"):
+                self.assert_eq(0.1 % pser, 0.1 % psser)
             self.assertRaises(TypeError, lambda: True % psser)
             self.assertRaises(TypeError, lambda: datetime.date(1994, 1, 1) % psser)
             self.assertRaises(TypeError, lambda: datetime.datetime(1994, 1, 1) % psser)

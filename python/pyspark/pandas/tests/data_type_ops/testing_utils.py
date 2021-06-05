@@ -28,7 +28,7 @@ class TestCasesUtils(object):
     """A utility holding common test cases for arithmetic operations of different data types."""
     @property
     def numeric_psers(self):
-        dtypes = [np.float32, float, int, np.int32]
+        dtypes = [np.float64, float, int, np.int32]
         sers = [pd.Series([1, 2, 3], dtype=dtype) for dtype in dtypes]
         sers.append(pd.Series([decimal.Decimal(1), decimal.Decimal(2), decimal.Decimal(3)]))
         return sers
