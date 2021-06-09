@@ -33,6 +33,7 @@ import scala.xml.Node
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.hdfs.protocol.HdfsConstants
 import org.apache.hadoop.security.AccessControlException
@@ -278,6 +279,9 @@ private[history] class FsHistoryProvider(conf: SparkConf, clock: Clock)
     // Validate the log directory.
     val path = new Path(logDir)
     try {
+      if (!fs.exists(path)) {
+        fs.mkdirs(path, new FsPermission(Integer.parseInt("770", 8).toShort))
+      }
       if (!fs.getFileStatus(path).isDirectory) {
         throw new IllegalArgumentException(
           "Logging directory specified is not a directory: %s".format(logDir))
