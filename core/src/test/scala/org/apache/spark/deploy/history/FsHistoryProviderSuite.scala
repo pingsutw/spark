@@ -757,6 +757,7 @@ class FsHistoryProviderSuite extends SparkFunSuite with Matchers with Logging {
 
   testRetry("provider reports error after FS leaves safe mode") {
     testDir.delete()
+    testDir = File.createTempFile("pre-", ".txt")
     val clock = new ManualClock()
     val provider = new SafeModeTestProvider(createTestConf(), clock)
     val errorHandler = mock(classOf[Thread.UncaughtExceptionHandler])
