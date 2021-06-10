@@ -757,6 +757,8 @@ class FsHistoryProviderSuite extends SparkFunSuite with Matchers with Logging {
 
   testRetry("provider reports error after FS leaves safe mode") {
     testDir.delete()
+    // SPARK-35121 create HISTORY_LOG_DIR if the directory not exists. In order
+    // to trigger uncaughtException, we need to convert HISTORY_LOG_DIR to a file.
     testDir = File.createTempFile("pre-", ".txt")
     val clock = new ManualClock()
     val provider = new SafeModeTestProvider(createTestConf(), clock)
