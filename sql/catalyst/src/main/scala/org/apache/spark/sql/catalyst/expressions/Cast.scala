@@ -521,9 +521,9 @@ abstract class CastBase extends UnaryExpression with TimeZoneAwareExpression wit
     case StringType =>
       buildCast[UTF8String](_, utfs => {
         if (ansiEnabled) {
-          DateTimeUtils.stringToTimestampAnsi(utfs, ZoneOffset.UTC)
+          DateTimeUtils.stringToTimestampWithoutTZ(utfs, zoneId, ZoneOffset.UTC)
         } else {
-          DateTimeUtils.stringToTimestamp(utfs, ZoneOffset.UTC).orNull
+          DateTimeUtils.stringToTimestampWithoutTZ(utfs, zoneId, ZoneOffset.UTC)
         }
       })
   }
@@ -1426,17 +1426,21 @@ abstract class CastBase extends UnaryExpression with TimeZoneAwareExpression wit
       (c, evPrim, evNull) =>
         code"$evPrim = $dateTimeUtilsCls.convertTz($c, java.time.ZoneOffset.UTC, $zid);"
     case StringType =>
+      val zoneIdClass = classOf[ZoneId]
+      val zid = JavaCode.global(
+        ctx.addReferenceObj("zoneId", zoneId, zoneIdClass.getName),
+        zoneIdClass)
       val longOpt = ctx.freshVariable("longOpt", classOf[Option[Long]])
       (c, evPrim, evNull) =>
         if (ansiEnabled) {
           code"""
             $evPrim =
-              $dateTimeUtilsCls.stringToTimestampAnsi($c, java.time.ZoneOffset.UTC);
+              $dateTimeUtilsCls.stringToTimestampWithoutTZAnsi($c, $zid, java.time.ZoneOffset.UTC);
            """
         } else {
           code"""
             scala.Option<Long> $longOpt =
-             $dateTimeUtilsCls.stringToTimestamp($c, java.time.ZoneOffset.UTC);
+             $dateTimeUtilsCls.stringToTimestampWithoutTZ($c, $zid, java.time.ZoneOffset.UTC);
             if ($longOpt.isDefined()) {
               $evPrim = ((Long) $longOpt.get()).longValue();
             } else {

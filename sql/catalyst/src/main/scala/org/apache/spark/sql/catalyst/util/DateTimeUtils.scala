@@ -378,6 +378,19 @@ object DateTimeUtils {
       throw QueryExecutionErrors.cannotCastUTF8StringToDataTypeError(s, TimestampType)
     }
   }
+
+  def stringToTimestampWithoutTZ(s: UTF8String, fromZone: ZoneId, toZone: ZoneId): Long = {
+    val micros = stringToTimestamp(s, fromZone).getOrElse {
+      throw QueryExecutionErrors.cannotCastUTF8StringToDataTypeError(s, TimestampType)
+    }
+    convertTz(micros, fromZone, toZone)
+  }
+
+  def stringToTimestampWithoutTZAnsi(s: UTF8String, timeZoneId: ZoneId): Long = {
+    stringToTimestamp(s, timeZoneId).getOrElse {
+      throw QueryExecutionErrors.cannotCastUTF8StringToDataTypeError(s, TimestampType)
+    }
+  }
   // See issue SPARK-35679
   // min second cause overflow in instant to micro
   private val MIN_SECONDS = Math.floorDiv(Long.MinValue, MICROS_PER_SECOND)
