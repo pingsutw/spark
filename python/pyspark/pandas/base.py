@@ -268,7 +268,7 @@ def numpy_column_op(f):
 
     return wrapper
 
-
+InternalFrame
 class IndexOpsMixin(object, metaclass=ABCMeta):
     """common ops mixin to support a unified interface / docs for Series / Index
 

@@ -48,7 +48,7 @@ class StringOps(DataTypeOps):
     def pretty_name(self) -> str:
         return "strings"
 
-    def add(self, left, right) -> Union["Series", "Index"]:
+    def add(self, left: "Series", right: Union["Series", str]) -> Union["Series", "Index"]:
         if isinstance(right, IndexOpsMixin) and isinstance(right.spark.data_type, StringType):
             return column_op(F.concat)(left, right)
         elif isinstance(right, str):
@@ -56,10 +56,10 @@ class StringOps(DataTypeOps):
         else:
             raise TypeError("string addition can only be applied to string series or literals.")
 
-    def sub(self, left, right):
+    def sub(self, left: "Series", right: Union["Series", str]):
         raise TypeError("subtraction can not be applied to string series or literals.")
 
-    def mul(self, left, right) -> Union["Series", "Index"]:
+    def mul(self, left: "Series", right: Union["Series", int]) -> Union["Series", "Index"]:
         if isinstance(right, str):
             raise TypeError("multiplication can not be applied to a string literal.")
 
