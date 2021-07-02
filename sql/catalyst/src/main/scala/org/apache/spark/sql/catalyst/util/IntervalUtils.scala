@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils.millisToMicros
 import org.apache.spark.sql.catalyst.util.IntervalStringStyles.{ANSI_STYLE, HIVE_STYLE, IntervalStyle}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DayTimeIntervalType, Decimal, YearMonthIntervalType}
+import org.apache.spark.sql.types.{DayTimeIntervalType => DT, Decimal, YearMonthIntervalType => YM}
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 // The style of textual representation of intervals
@@ -105,25 +105,91 @@ object IntervalUtils {
   private val yearMonthRegex = (s"^$yearMonthPatternString$$").r
   private val yearMonthLiteralRegex =
     (s"(?i)^INTERVAL\\s+([+|-])?'$yearMonthPatternString'\\s+YEAR\\s+TO\\s+MONTH$$").r
+  private val yearMonthIndividualPatternString = "([+|-])?(\\d+)"
+  private val yearMonthIndividualRegex = (s"^$yearMonthIndividualPatternString$$").r
+  private val yearMonthIndividualLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?'$yearMonthIndividualPatternString'\\s+(YEAR|MONTH)$$").r
+
+  private def getSign(firstSign: String, secondSign: String): Int = {
+    (firstSign, secondSign) match {
+      case ("-", "-") => 1
+      case ("-", _) => -1
+      case (_, "-") => -1
+      case (_, _) => 1
+    }
+  }
+
+  val supportedFormat = Map(
+    (YM.YEAR, YM.MONTH) -> Seq("[+|-]y-m", "INTERVAL [+|-]'[+|-]y-m' YEAR TO MONTH"),
+    (YM.YEAR, YM.YEAR) -> Seq("[+|-]y", "INTERVAL [+|-]'[+|-]y' YEAR"),
+    (YM.MONTH, YM.MONTH) -> Seq("[+|-]m", "INTERVAL [+|-]'[+|-]m' MONTH"),
+    (DT.DAY, DT.DAY) -> Seq("[+|-]d", "INTERVAL [+|-]'[+|-]d' DAY"),
+    (DT.DAY, DT.HOUR) -> Seq("[+|-]d h", "INTERVAL [+|-]'[+|-]d h' DAY TO HOUR"),
+    (DT.DAY, DT.MINUTE) -> Seq("[+|-]d h:m", "INTERVAL [+|-]'[+|-]d h:m' DAY TO MINUTE"),
+    (DT.DAY, DT.SECOND) -> Seq("[+|-]d h:m:s.n", "INTERVAL [+|-]'[+|-]d h:m:s.n' DAY TO SECOND"),
+    (DT.HOUR, DT.HOUR) -> Seq("[+|-]h", "INTERVAL [+|-]'[+|-]h' HOUR"),
+    (DT.HOUR, DT.MINUTE) -> Seq("[+|-]h:m", "INTERVAL [+|-]'[+|-]h:m' HOUR TO MINUTE"),
+    (DT.HOUR, DT.SECOND) -> Seq("[+|-]h:m:s.n", "INTERVAL [+|-]'[+|-]h:m:s.n' HOUR TO SECOND"),
+    (DT.MINUTE, DT.MINUTE) -> Seq("[+|-]m", "INTERVAL [+|-]'[+|-]m' MINUTE"),
+    (DT.MINUTE, DT.SECOND) -> Seq("[+|-]m:s.n", "INTERVAL [+|-]'[+|-]m:s.n' MINUTE TO SECOND"),
+    (DT.SECOND, DT.SECOND) -> Seq("[+|-]s.n", "INTERVAL [+|-]'[+|-]s.n' SECOND")
+  )
 
   def castStringToYMInterval(
       input: UTF8String,
-      // TODO(SPARK-35768): Take into account year-month interval fields in cast
       startField: Byte,
       endField: Byte): Int = {
+
+    def checkStringIntervalType(targetStartField: Byte, targetEndField: Byte): Unit = {
+      if (startField != targetStartField || endField != targetEndField) {
+        throw new IllegalArgumentException(s"Interval string does not match year-month format of " +
+          s"${supportedFormat((targetStartField, targetStartField))
+            .map(format => s"`$format`").mkString(", ")} " +
+          s"when cast to ${YM(startField, endField).typeName}: ${input.toString}")
+      }
+    }
+
     input.trimAll().toString match {
-      case yearMonthRegex("-", year, month) => toYMInterval(year, month, -1)
-      case yearMonthRegex(_, year, month) => toYMInterval(year, month, 1)
+      case yearMonthRegex("-", year, month) =>
+        checkStringIntervalType(YM.YEAR, YM.MONTH)
+        toYMInterval(year, month, -1)
+      case yearMonthRegex(_, year, month) =>
+        checkStringIntervalType(YM.YEAR, YM.MONTH)
+        toYMInterval(year, month, 1)
       case yearMonthLiteralRegex(firstSign, secondSign, year, month) =>
-        (firstSign, secondSign) match {
-          case ("-", "-") => toYMInterval(year, month, 1)
-          case ("-", _) => toYMInterval(year, month, -1)
-          case (_, "-") => toYMInterval(year, month, -1)
-          case (_, _) => toYMInterval(year, month, 1)
+        checkStringIntervalType(YM.YEAR, YM.MONTH)
+        toYMInterval(year, month, getSign(firstSign, secondSign))
+      case yearMonthIndividualRegex(secondSign, value) =>
+        safeToInterval {
+          val sign = getSign("+", secondSign)
+          if (endField == YM.YEAR) {
+            sign * Math.toIntExact(value.toLong * MONTHS_PER_YEAR)
+          } else if (startField == YM.MONTH) {
+            Math.toIntExact(sign * value.toLong)
+          } else {
+            throw new IllegalArgumentException(
+              s"Interval string does not match year-month format of " +
+                s"${supportedFormat((YM.YEAR, YM.MONTH))
+                  .map(format => s"`$format`").mkString(", ")} " +
+                s"when cast to ${YM(startField, endField).typeName}: ${input.toString}")
+          }
+        }
+      case yearMonthIndividualLiteralRegex(firstSign, secondSign, value, suffix) =>
+        safeToInterval {
+          val sign = getSign(firstSign, secondSign)
+          if ("YEAR".equalsIgnoreCase(suffix)) {
+            checkStringIntervalType(YM.YEAR, YM.YEAR)
+            sign * Math.toIntExact(value.toLong * MONTHS_PER_YEAR)
+          } else {
+            checkStringIntervalType(YM.MONTH, YM.MONTH)
+            Math.toIntExact(sign * value.toLong)
+          }
         }
       case _ => throw new IllegalArgumentException(
-        s"Interval string does not match year-month format of `[+|-]y-m` " +
-          s"or `INTERVAL [+|-]'[+|-]y-m' YEAR TO MONTH`: ${input.toString}")
+        s"Interval string does not match year-month format of " +
+          s"${supportedFormat((YM.YEAR, YM.MONTH))
+            .map(format => s"`$format`").mkString(", ")} " +
+          s"when cast to ${YM(startField, endField).typeName}: ${input.toString}")
     }
   }
 
@@ -145,11 +211,9 @@ object IntervalUtils {
     }
   }
 
-  def toYMInterval(yearStr: String, monthStr: String, sign: Int): Int = {
+  private def safeToInterval[T](f: => T): T = {
     try {
-      val years = toLongWithRange(YEAR, yearStr, 0, Integer.MAX_VALUE / MONTHS_PER_YEAR)
-      val totalMonths = sign * (years * MONTHS_PER_YEAR + toLongWithRange(MONTH, monthStr, 0, 11))
-      Math.toIntExact(totalMonths)
+      f
     } catch {
       case NonFatal(e) =>
         throw new IllegalArgumentException(
@@ -157,17 +221,73 @@ object IntervalUtils {
     }
   }
 
+  private def toYMInterval(yearStr: String, monthStr: String, sign: Int): Int = {
+    safeToInterval {
+      val years = toLongWithRange(YEAR, yearStr, 0, Integer.MAX_VALUE / MONTHS_PER_YEAR)
+      val totalMonths = sign * (years * MONTHS_PER_YEAR + toLongWithRange(MONTH, monthStr, 0, 11))
+      Math.toIntExact(totalMonths)
+    }
+  }
+
+  private val normalPattern = "(\\d{1,2})"
+  private val dayBoundPattern = "(\\d{1,9})"
+  private val hourBoundPattern = "(\\d{1,10})"
+  private val minuteBoundPattern = "(\\d{1,12})"
+  private val secondBoundPattern = "(\\d{1,13})"
+  private val microPattern = "(\\.\\d{1,9})"
+
+  private val dayHourPatternString = s"([+|-])?$dayBoundPattern $normalPattern"
+  private val dayHourRegex = (s"^$dayHourPatternString$$").r
+  private val dayHourLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?\\'$dayHourPatternString\\'\\s+DAY\\s+TO\\s+HOUR$$").r
+
+  private val dayMinutePatternString = s"([+|-])?$dayBoundPattern $normalPattern:$normalPattern"
+  private val dayMinuteRegex = (s"^$dayMinutePatternString$$").r
+  private val dayMinuteLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?\\'$dayMinutePatternString\\'\\s+DAY\\s+TO\\s+MINUTE$$").r
+
   private val daySecondPatternString =
-    "([+|-])?(\\d+) (\\d{1,2}):(\\d{1,2}):(\\d{1,2})(\\.\\d{1,9})?"
+    s"([+|-])?$dayBoundPattern $normalPattern:$normalPattern:$normalPattern$microPattern?"
   private val daySecondRegex = (s"^$daySecondPatternString$$").r
   private val daySecondLiteralRegex =
     (s"(?i)^INTERVAL\\s+([+|-])?\\'$daySecondPatternString\\'\\s+DAY\\s+TO\\s+SECOND$$").r
 
+  private val hourMinutePatternString = s"([+|-])?$hourBoundPattern:$normalPattern"
+  private val hourMinuteRegex = (s"^$hourMinutePatternString$$").r
+  private val hourMinuteLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?\\'$hourMinutePatternString\\'\\s+HOUR\\s+TO\\s+MINUTE$$").r
+
+  private val hourSecondPatternString =
+    s"([+|-])?$hourBoundPattern:$normalPattern:$normalPattern$microPattern?"
+  private val hourSecondRegex = (s"^$hourSecondPatternString$$").r
+  private val hourSecondLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?\\'$hourSecondPatternString\\'\\s+HOUR\\s+TO\\s+SECOND$$").r
+
+  private val minuteSecondPatternString =
+    s"([+|-])?$minuteBoundPattern:$normalPattern$microPattern?"
+  private val minuteSecondRegex = (s"^$minuteSecondPatternString$$").r
+  private val minuteSecondLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?\\'$minuteSecondPatternString\\'\\s+MINUTE\\s+TO\\s+SECOND$$").r
+
+  private val dayTimeIndividualPatternString = s"([+|-])?$secondBoundPattern(\\.\\d{1,9})?"
+  private val dayTimeIndividualRegex = (s"^$dayTimeIndividualPatternString$$").r
+  private val dayTimeIndividualLiteralRegex =
+    (s"(?i)^INTERVAL\\s+([+|-])?'$dayTimeIndividualPatternString'\\s+(DAY|HOUR|MINUTE|SECOND)$$").r
+
   def castStringToDTInterval(
       input: UTF8String,
-      // TODO(SPARK-35735): Take into account day-time interval fields in cast
       startField: Byte,
       endField: Byte): Long = {
+
+    def checkStringIntervalType(targetStartField: Byte, targetEndField: Byte): Unit = {
+      if (startField != targetStartField || endField != targetEndField) {
+        throw new IllegalArgumentException(s"Interval string does not match day-time format of " +
+          s"${supportedFormat((targetStartField, targetStartField))
+            .map(format => s"`$format`").mkString(", ")} " +
+          s"when cast to ${DT(startField, endField).typeName}: ${input.toString}")
+      }
+    }
+
     def secondAndMicro(second: String, micro: String): String = {
       if (micro != null) {
         s"$second$micro"
@@ -177,21 +297,100 @@ object IntervalUtils {
     }
 
     input.trimAll().toString match {
-      case daySecondRegex("-", day, hour, minute, second, micro) =>
-        toDTInterval(day, hour, minute, secondAndMicro(second, micro), -1)
-      case daySecondRegex(_, day, hour, minute, second, micro) =>
-        toDTInterval(day, hour, minute, secondAndMicro(second, micro), 1)
+      case dayHourRegex(sign, day, hour) =>
+        checkStringIntervalType(DT.DAY, DT.HOUR)
+        toDTInterval(day, hour, "0", "0", getSign(null, sign))
+      case dayHourLiteralRegex(firstSign, secondSign, day, hour) =>
+        checkStringIntervalType(DT.DAY, DT.HOUR)
+        toDTInterval(day, hour, "0", "0", getSign(firstSign, secondSign))
+      case dayMinuteRegex(sign, day, hour, minute) =>
+        checkStringIntervalType(DT.DAY, DT.MINUTE)
+        toDTInterval(day, hour, minute, "0", getSign(null, sign))
+      case dayMinuteLiteralRegex(firstSign, secondSign, day, hour, minute) =>
+        checkStringIntervalType(DT.DAY, DT.MINUTE)
+        toDTInterval(day, hour, minute, "0", getSign(firstSign, secondSign))
+      case daySecondRegex(sign, day, hour, minute, second, micro) =>
+        checkStringIntervalType(DT.DAY, DT.SECOND)
+        toDTInterval(day, hour, minute, secondAndMicro(second, micro), getSign(null, sign))
       case daySecondLiteralRegex(firstSign, secondSign, day, hour, minute, second, micro) =>
-        (firstSign, secondSign) match {
-          case ("-", "-") => toDTInterval(day, hour, minute, secondAndMicro(second, micro), 1)
-          case ("-", _) => toDTInterval(day, hour, minute, secondAndMicro(second, micro), -1)
-          case (_, "-") => toDTInterval(day, hour, minute, secondAndMicro(second, micro), -1)
-          case (_, _) => toDTInterval(day, hour, minute, secondAndMicro(second, micro), 1)
+        checkStringIntervalType(DT.DAY, DT.SECOND)
+        toDTInterval(day, hour, minute, secondAndMicro(second, micro),
+          getSign(firstSign, secondSign))
+
+      case hourMinuteRegex(sign, hour, minute) =>
+        checkStringIntervalType(DT.HOUR, DT.MINUTE)
+        toDTInterval(hour, minute, "0", getSign(null, sign))
+      case hourMinuteLiteralRegex(firstSign, secondSign, hour, minute) =>
+        checkStringIntervalType(DT.HOUR, DT.MINUTE)
+        toDTInterval(hour, minute, "0", getSign(firstSign, secondSign))
+      case hourSecondRegex(sign, hour, minute, second, micro) =>
+        checkStringIntervalType(DT.HOUR, DT.SECOND)
+        toDTInterval(hour, minute, secondAndMicro(second, micro), getSign(null, sign))
+      case hourSecondLiteralRegex(firstSign, secondSign, hour, minute, second, micro) =>
+        checkStringIntervalType(DT.HOUR, DT.SECOND)
+        toDTInterval(hour, minute, secondAndMicro(second, micro), getSign(firstSign, secondSign))
+
+      case minuteSecondRegex(sign, minute, second, micro) =>
+        checkStringIntervalType(DT.MINUTE, DT.SECOND)
+        toDTInterval(minute, secondAndMicro(second, micro), getSign(null, sign))
+      case minuteSecondLiteralRegex(firstSign, secondSign, minute, second, micro) =>
+        checkStringIntervalType(DT.MINUTE, DT.SECOND)
+        toDTInterval(minute, secondAndMicro(second, micro), getSign(firstSign, secondSign))
+
+      case dayTimeIndividualRegex(secondSign, value, suffix) =>
+        safeToInterval {
+          val sign = getSign("+", secondSign)
+          (startField, endField) match {
+            case (DT.DAY, DT.DAY) if suffix == null && value.length <= 9 =>
+              sign * value.toLong * MICROS_PER_DAY
+            case (DT.HOUR, DT.HOUR) if suffix == null && value.length <= 10 =>
+              sign * value.toLong * MICROS_PER_HOUR
+            case (DT.MINUTE, DT.MINUTE) if suffix == null && value.length <= 12 =>
+              sign * value.toLong * MICROS_PER_MINUTE
+            case (DT.SECOND, DT.SECOND) if value.length <= 13 =>
+              sign match {
+                case 1 => parseSecondNano(secondAndMicro(value, suffix))
+                case -1 => parseSecondNano(s"-${secondAndMicro(value, suffix)}")
+              }
+            case (_, _) => throw new IllegalArgumentException(
+              s"Interval string does not match day-time format of " +
+                s"${supportedFormat((startField, endField))
+                    .map(format => s"`$format`").mkString(", ")} " +
+                s"when cast to ${DT(startField, endField).typeName}: ${input.toString}")
+          }
+        }
+      case dayTimeIndividualLiteralRegex(firstSign, secondSign, value, suffix, unit) =>
+        safeToInterval {
+          val sign = getSign(firstSign, secondSign)
+          unit match {
+            case "DAY" if suffix == null && value.length <= 9 =>
+              checkStringIntervalType(DT.DAY, DT.DAY)
+              sign * value.toLong * MICROS_PER_DAY
+            case "HOUR" if suffix == null && value.length <= 10 =>
+              checkStringIntervalType(DT.HOUR, DT.HOUR)
+              sign * value.toLong * MICROS_PER_HOUR
+            case "MINUTE" if suffix == null && value.length <= 12 =>
+              checkStringIntervalType(DT.MINUTE, DT.MINUTE)
+              sign * value.toLong * MICROS_PER_MINUTE
+            case "SECOND" if value.length <= 13 =>
+              checkStringIntervalType(DT.SECOND, DT.SECOND)
+              sign match {
+                case 1 => parseSecondNano(secondAndMicro(value, suffix))
+                case -1 => parseSecondNano(s"-${secondAndMicro(value, suffix)}")
+              }
+            case _ => throw new IllegalArgumentException(
+              s"Interval string does not match day-time format of " +
+                s"${supportedFormat((startField, endField))
+                  .map(format => s"`$format`").mkString(", ")} " +
+                s"when cast to ${DT(startField, endField).typeName}: ${input.toString}")
+          }
         }
       case _ =>
         throw new IllegalArgumentException(
-          s"Interval string must match day-time format of `d h:m:s.n` " +
-            s"or `INTERVAL [+|-]'[+|-]d h:m:s.n' DAY TO SECOND`: ${input.toString}, " +
+          s"Interval string does not match day-time format of " +
+            s"${supportedFormat((startField, endField))
+              .map(format => s"`$format`").mkString(", ")} " +
+            s"when cast to ${DT(startField, endField).typeName}: ${input.toString}, " +
             s"$fallbackNotice")
     }
   }
@@ -208,6 +407,31 @@ object IntervalUtils {
     val hours = toLongWithRange(HOUR, hourStr, 0, 23)
     micros = Math.addExact(micros, sign * hours * MICROS_PER_HOUR)
     val minutes = toLongWithRange(MINUTE, minuteStr, 0, 59)
+    micros = Math.addExact(micros, sign * minutes * MICROS_PER_MINUTE)
+    micros = Math.addExact(micros, sign * parseSecondNano(secondStr))
+    micros
+  }
+
+  def toDTInterval(
+      hourStr: String,
+      minuteStr: String,
+      secondStr: String,
+      sign: Int): Long = {
+    var micros = 0L
+    val hours = toLongWithRange(HOUR, hourStr, 0, 2562047788L)
+    micros = Math.addExact(micros, sign * hours * MICROS_PER_HOUR)
+    val minutes = toLongWithRange(MINUTE, minuteStr, 0, 59)
+    micros = Math.addExact(micros, sign * minutes * MICROS_PER_MINUTE)
+    micros = Math.addExact(micros, sign * parseSecondNano(secondStr))
+    micros
+  }
+
+  def toDTInterval(
+      minuteStr: String,
+      secondStr: String,
+      sign: Int): Long = {
+    var micros = 0L
+    val minutes = toLongWithRange(MINUTE, minuteStr, 0, 153722867280L)
     micros = Math.addExact(micros, sign * minutes * MICROS_PER_MINUTE)
     micros = Math.addExact(micros, sign * parseSecondNano(secondStr))
     micros
@@ -892,17 +1116,28 @@ object IntervalUtils {
    * @throws ArithmeticException If numeric overflow occurs
    */
   def durationToMicros(duration: Duration): Long = {
+    durationToMicros(duration, DT.SECOND)
+  }
+
+  def durationToMicros(duration: Duration, endField: Byte): Long = {
     val seconds = duration.getSeconds
-    if (seconds == minDurationSeconds) {
+    val micros = if (seconds == minDurationSeconds) {
       val microsInSeconds = (minDurationSeconds + 1) * MICROS_PER_SECOND
       val nanoAdjustment = duration.getNano
       assert(0 <= nanoAdjustment && nanoAdjustment < NANOS_PER_SECOND,
         "Duration.getNano() must return the adjustment to the seconds field " +
-        "in the range from 0 to 999999999 nanoseconds, inclusive.")
+          "in the range from 0 to 999999999 nanoseconds, inclusive.")
       Math.addExact(microsInSeconds, (nanoAdjustment - NANOS_PER_SECOND) / NANOS_PER_MICROS)
     } else {
       val microsInSeconds = Math.multiplyExact(seconds, MICROS_PER_SECOND)
       Math.addExact(microsInSeconds, duration.getNano / NANOS_PER_MICROS)
+    }
+
+    endField match {
+      case DT.DAY => micros - micros % MICROS_PER_DAY
+      case DT.HOUR => micros - micros % MICROS_PER_HOUR
+      case DT.MINUTE => micros - micros % MICROS_PER_MINUTE
+      case DT.SECOND => micros
     }
   }
 
@@ -925,13 +1160,13 @@ object IntervalUtils {
    * @throws ArithmeticException If numeric overflow occurs
    */
   def periodToMonths(period: Period): Int = {
-    periodToMonths(period, YearMonthIntervalType.MONTH)
+    periodToMonths(period, YM.MONTH)
   }
 
   def periodToMonths(period: Period, endField: Byte): Int = {
     val monthsInYears = Math.multiplyExact(period.getYears, MONTHS_PER_YEAR)
     val months = Math.addExact(monthsInYears, period.getMonths)
-    if (endField == YearMonthIntervalType.YEAR) {
+    if (endField == YM.YEAR) {
       months - months % MONTHS_PER_YEAR
     } else {
       months
@@ -976,15 +1211,14 @@ object IntervalUtils {
       absMonths = -absMonths
     }
     val year = s"$sign${absMonths / MONTHS_PER_YEAR}"
-    val month = s"${absMonths % MONTHS_PER_YEAR}"
-    val yearAndMonth = s"$year-$month"
+    val yearAndMonth = s"$year-${absMonths % MONTHS_PER_YEAR}"
     style match {
       case ANSI_STYLE =>
         val formatBuilder = new StringBuilder("INTERVAL '")
         if (startField == endField) {
           startField match {
-            case YearMonthIntervalType.YEAR => formatBuilder.append(s"$year' YEAR")
-            case YearMonthIntervalType.MONTH => formatBuilder.append(s"$month' MONTH")
+            case YM.YEAR => formatBuilder.append(s"$year' YEAR")
+            case YM.MONTH => formatBuilder.append(s"$months' MONTH")
           }
         } else {
           formatBuilder.append(s"$yearAndMonth' YEAR TO MONTH")
@@ -1011,31 +1245,43 @@ object IntervalUtils {
       endField: Byte): String = {
     var sign = ""
     var rest = micros
-    val from = DayTimeIntervalType.fieldToString(startField).toUpperCase
-    val to = DayTimeIntervalType.fieldToString(endField).toUpperCase
+    val from = DT.fieldToString(startField).toUpperCase
+    val to = DT.fieldToString(endField).toUpperCase
+    val prefix = "INTERVAL '"
+    val postfix = s"' ${if (startField == endField) from else s"$from TO $to"}"
+
     if (micros < 0) {
       if (micros == Long.MinValue) {
         // Especial handling of minimum `Long` value because negate op overflows `Long`.
         // seconds = 106751991 * (24 * 60 * 60) + 4 * 60 * 60 + 54 = 9223372036854
         // microseconds = -9223372036854000000L-775808 == Long.MinValue
+        val baseStr = "-106751991 04:00:54.775808000"
         val minIntervalString = style match {
           case ANSI_STYLE =>
-            val baseStr = "-106751991 04:00:54.775808"
-            val fromPos = startField match {
-              case DayTimeIntervalType.DAY => 0
-              case DayTimeIntervalType.HOUR => 11
-              case DayTimeIntervalType.MINUTE => 14
-              case DayTimeIntervalType.SECOND => 17
+            val firstStr = startField match {
+              case DT.DAY => "-106751991"
+              case DT.HOUR => "-2562047788"
+              case DT.MINUTE => "-153722867280"
+              case DT.SECOND => "-9223372036854.775808"
             }
-            val toPos = endField match {
-              case DayTimeIntervalType.DAY => 10
-              case DayTimeIntervalType.HOUR => 13
-              case DayTimeIntervalType.MINUTE => 16
-              case DayTimeIntervalType.SECOND => baseStr.length
+            val followingStr = if (startField == endField) {
+              ""
+            } else {
+              val substrStart = startField match {
+                case DT.DAY => 10
+                case DT.HOUR => 13
+                case DT.MINUTE => 16
+              }
+              val substrEnd = endField match {
+                case DT.HOUR => 13
+                case DT.MINUTE => 16
+                case DT.SECOND => 26
+              }
+              baseStr.substring(substrStart, substrEnd)
             }
-            val postfix = if (startField == endField) from else s"$from TO $to"
-            s"INTERVAL '${baseStr.substring(fromPos, toPos)}' $postfix"
-          case HIVE_STYLE => "-106751991 04:00:54.775808000"
+
+            s"$prefix$firstStr$followingStr$postfix"
+          case HIVE_STYLE => baseStr
         }
         return minIntervalString
       } else {
@@ -1043,53 +1289,51 @@ object IntervalUtils {
         rest = -rest
       }
     }
-    val secondsWithFraction = rest % MICROS_PER_MINUTE
-    rest /= MICROS_PER_MINUTE
-    val minutes = rest % MINUTES_PER_HOUR
-    rest /= MINUTES_PER_HOUR
-    val hours = rest % HOURS_PER_DAY
-    val days = rest / HOURS_PER_DAY
-    val leadSecZero = if (secondsWithFraction < 10 * MICROS_PER_SECOND) "0" else ""
     val intervalString = style match {
       case ANSI_STYLE =>
-        val secStr = java.math.BigDecimal.valueOf(secondsWithFraction, 6)
-          .stripTrailingZeros()
-          .toPlainString()
-        val formatBuilder = new StringBuilder("INTERVAL '")
-        if (startField == endField) {
-          startField match {
-            case DayTimeIntervalType.DAY => formatBuilder.append(s"$sign$days' ")
-            case DayTimeIntervalType.HOUR => formatBuilder.append(f"$hours%02d' ")
-            case DayTimeIntervalType.MINUTE => formatBuilder.append(f"$minutes%02d' ")
-            case DayTimeIntervalType.SECOND => formatBuilder.append(s"$leadSecZero$secStr' ")
-          }
-          formatBuilder.append(from).toString
-        } else {
-          val formatArgs = new mutable.ArrayBuffer[Long]
-          if (startField <= DayTimeIntervalType.DAY && DayTimeIntervalType.DAY < endField) {
-            formatBuilder.append(s"$sign$days ")
-          }
-          if (startField <= DayTimeIntervalType.HOUR && DayTimeIntervalType.HOUR < endField) {
-            formatBuilder.append("%02d:")
-            formatArgs.append(hours)
-          }
-          if (startField <= DayTimeIntervalType.MINUTE && DayTimeIntervalType.MINUTE < endField) {
-            formatBuilder.append("%02d:")
-            formatArgs.append(minutes)
-          }
-          endField match {
-            case DayTimeIntervalType.HOUR =>
-              formatBuilder.append("%02d' ")
-              formatArgs.append(hours)
-            case DayTimeIntervalType.MINUTE =>
-              formatBuilder.append("%02d' ")
-              formatArgs.append(minutes)
-            case DayTimeIntervalType.SECOND =>
-              formatBuilder.append(s"$leadSecZero$secStr' ")
-          }
-          formatBuilder.append(s"$from TO $to").toString.format(formatArgs.toSeq: _*)
+        val formatBuilder = new mutable.StringBuilder(sign)
+        val formatArgs = new mutable.ArrayBuffer[Long]()
+        startField match {
+          case DT.DAY =>
+            formatBuilder.append(rest / MICROS_PER_DAY)
+            rest %= MICROS_PER_DAY
+          case DT.HOUR =>
+            formatBuilder.append("%02d")
+            formatArgs.append(rest / MICROS_PER_HOUR)
+            rest %= MICROS_PER_HOUR
+          case DT.MINUTE =>
+            formatBuilder.append("%02d")
+            formatArgs.append(rest / MICROS_PER_MINUTE)
+            rest %= MICROS_PER_MINUTE
+          case DT.SECOND =>
+            val leadZero = if (rest < 10 * MICROS_PER_SECOND) "0" else ""
+            formatBuilder.append(s"$leadZero" +
+              s"${java.math.BigDecimal.valueOf(rest, 6).stripTrailingZeros.toPlainString}")
         }
+
+        if (startField < DT.HOUR && DT.HOUR <= endField) {
+          formatBuilder.append(" %02d")
+          formatArgs.append(rest / MICROS_PER_HOUR)
+          rest %= MICROS_PER_HOUR
+        }
+        if (startField < DT.MINUTE && DT.MINUTE <= endField) {
+          formatBuilder.append(":%02d")
+          formatArgs.append(rest / MICROS_PER_MINUTE)
+          rest %= MICROS_PER_MINUTE
+        }
+        if (startField < DT.SECOND && DT.SECOND <= endField) {
+          val leadZero = if (rest < 10 * MICROS_PER_SECOND) "0" else ""
+          formatBuilder.append(
+            s":$leadZero${java.math.BigDecimal.valueOf(rest, 6).stripTrailingZeros.toPlainString}")
+        }
+        s"$prefix${formatBuilder.toString.format(formatArgs.toSeq: _*)}$postfix"
       case HIVE_STYLE =>
+        val secondsWithFraction = rest % MICROS_PER_MINUTE
+        rest /= MICROS_PER_MINUTE
+        val minutes = rest % MINUTES_PER_HOUR
+        rest /= MINUTES_PER_HOUR
+        val hours = rest % HOURS_PER_DAY
+        val days = rest / HOURS_PER_DAY
         val seconds = secondsWithFraction / MICROS_PER_SECOND
         val nanos = (secondsWithFraction % MICROS_PER_SECOND) * NANOS_PER_MICROS
         f"$sign$days $hours%02d:$minutes%02d:$seconds%02d.$nanos%09d"
